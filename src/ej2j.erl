@@ -1,4 +1,4 @@
-%% @author Oleg Smirnov <oleg.smirnov@gmail.com>                                                      
+%% @author Oleg Smirnov <oleg.smirnov@gmail.com>
 %% @doc Application
 
 -module(ej2j).
@@ -29,6 +29,7 @@ get_app_env(Opt, Default) ->
 
 -spec init(any()) -> {ok, {tuple(), [tuple()]}}.
 init([]) ->
+    %% Initialize processes
     Component = {ej2j_comp, {ej2j_comp, start_link, []},
                  permanent, 1000, worker, [ej2j_comp]},
     RoutesDB = {ej2j_route, {ej2j_route, start_link, []},

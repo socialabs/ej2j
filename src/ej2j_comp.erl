@@ -39,30 +39,50 @@ start_client(OwnerJID, ForeignJID, Creds) ->
 get_routes(FromJID, ToJID) ->
     gen_server:call(?MODULE, {get_routes, FromJID, ToJID}).
 
+-spec get_client_pid(exmpp_jid:jid()) -> pid() | false.
+get_client_pid(FromJID) ->
+    gen_server:call(?MODULE, {get_client_pid, FromJID}).
+
 -spec init([]) -> {ok, #state{}}.
 init([]) ->
+    %% Contribute known NS and stanza elements
+    exmpp_xml:add_known_nss(xmpp, ['xcom:data']),
+    exmpp_xml:add_known_elems(xmpp, ['transport-disconnected']),
+
+    %% Initialize
     process_flag(trap_exit, true),
     erlang:send_after(0, self(), state),
     {ok, #state{}}.
 
--spec handle_call(any(), any(), #state{}) -> {reply, any(), #state{}} | 
+-spec handle_call(any(), any(), #state{}) -> {reply, any(), #state{}} |
                                              {stop, any(), any(), #state{}}.
 handle_call(stop, _From, State) ->
     exmpp_component:stop(State#state.session),
     {stop, normal, ok, State};
+
 handle_call({start_client, FromJID, ForeignJID, Creds}, _From,
             #state{session = ServerS} = State) ->
     [User, Domain] = string:tokens(ForeignJID, "@"),
     case client_spawn(User, Domain, Creds) of
-	{ok, {ToJID, ClientS}} -> 
+	{ok, {ToJID, ClientS}} ->
             ok = ej2j_route:add(FromJID, ToJID, ClientS, ServerS),
             {reply, {ok, ClientS}, State};
         {error, Error} ->
             {reply, {error, Error}, State}
     end;
+
 handle_call({get_routes, FromJID, ToJID}, _From, State) ->
     Routes = ej2j_route:get(FromJID, ToJID),
     {reply, Routes, State};
+
+handle_call({get_client_pid, FromJID}, _From, State) ->
+    Routes = ej2j_route:get_client_pid(FromJID),
+    {reply, Routes, State};
+
+handle_call({get_client_jid, Pid}, _From, State) ->
+    Routes = ej2j_route:get_client_jid(Pid),
+    {reply, Routes, State};
+
 handle_call(_Msg, _From, State) ->
     {reply, unexpected, State}.
 
@@ -71,17 +91,28 @@ handle_info(#received_packet{} = Packet, #state{session = Session} = State) ->
     error_logger:info_msg("Packet received: ~p~n", [Packet]),
     spawn_link(fun() -> process_received_packet(Session, Packet) end),
     {noreply, State};
+
 handle_info(#received_packet{packet_type = Type, raw_packet = Packet}, State) ->
     error_logger:warning_msg("Unknown packet received(~p): ~p~n", [Type, Packet]),
     {noreply, State};
+
 handle_info({'EXIT', Server, _}, #state{session = Server} = State) ->
     timer:sleep(?RESTART_DELAY),
     Session = ej2j_helper:component(),
     ej2j_route:free(),
     {noreply, State#state{session = Session}};
-handle_info({'EXIT', Pid, _}, State) ->
-    ej2j_route:del(Pid),
+
+handle_info({'EXIT', Pid, _}, #state{session = Session} = State) ->
+    case ej2j_route:get_client_jid(Pid) of
+        false ->
+            ok;
+        {SourceJid, TargetJid} ->
+            send_disconnect(Session, SourceJid, TargetJid),
+
+            ej2j_route:del(Pid)
+    end,
     {noreply, State};
+
 handle_info(state, #state{session = undefined} = State) ->
     erlang:send_after(?CHECK_INTERVAL, ?MODULE, state),
     Session = ej2j_helper:component(),
@@ -107,16 +138,18 @@ code_change(_OldVsn, State, _Extra) ->
 %% Process received packet
 
 -spec process_received_packet(any(), #received_packet{}) -> ok.
-process_received_packet(Session, 
+process_received_packet(Session,
                         #received_packet{packet_type = 'iq'} = Packet) ->
     #received_packet{type_attr=Type, raw_packet = IQ} = Packet,
     NS = exmpp_xml:get_ns_as_atom(exmpp_iq:get_payload(IQ)),
     process_iq(Session, Type, NS, IQ);
-process_received_packet(Session, 
+
+process_received_packet(Session,
                         #received_packet{packet_type = 'presence'} = Packet) ->
     #received_packet{raw_packet = Presence} = Packet,
     process_presence(Session, Presence);
-process_received_packet(Session, 
+
+process_received_packet(Session,
                         #received_packet{packet_type = 'message'} = Packet) ->
     #received_packet{raw_packet = Message} = Packet,
     process_message(Session, Message).
@@ -138,7 +171,7 @@ process_iq(_Session, "result", ?NS_ROSTER, IQ) ->
     Component = list_to_binary(ej2j:get_app_env(component, ?COMPONENT)),
     Roster = exmpp_xml:get_element_by_ns(IQ, ?NS_ROSTER),
     Items = lists:map(
-              fun(Item) -> 
+              fun(Item) ->
                       Attr = exmpp_xml:get_attribute(Item, <<"jid">>, <<"">>),
                       JID = exmpp_jid:parse(Attr),
                       NewJID = case exmpp_jid:domain(JID) of
@@ -179,7 +212,19 @@ process_iq(_Session, _Type, _NS, IQ) ->
 
 -spec process_presence(pid(), #xmlel{}) -> ok.
 process_presence(_Session, Presence) ->
-    process_generic(Presence).
+    Type = exmpp_xml:get_attribute(Presence, <<"type">>, <<"">>),
+    case Type of
+        <<"unavailable">> ->
+            SenderJID = exmpp_jid:parse(exmpp_stanza:get_sender(Presence)),
+            case get_client_pid(SenderJID) of
+                false ->
+                    ok;
+                Pid ->
+                    exmpp_session:stop(Pid)
+            end;
+        _ ->
+            process_generic(Presence)
+    end.
 
 -spec process_message(pid(), #xmlel{}) -> ok.
 process_message(_Session, Message) ->
@@ -204,12 +249,12 @@ update_route(Sender, Recipient) ->
 
 -spec route_packet(binary() | undefined, binary() | undefined, #xmlel{}) -> ok.
 route_packet(Sender, Recipient, Packet) when Sender =/= undefined,
-                                              Recipient =/= undefined ->    
+                                              Recipient =/= undefined ->
     From = exmpp_jid:parse(Sender),
     To = exmpp_jid:parse(Recipient),
     Routes = get_routes(From, To),
     route_packet(Routes, Packet);
-route_packet(_Sender, _Recipient, _Packet) -> 
+route_packet(_Sender, _Recipient, _Packet) ->
     ok.
 
 -spec route_packet(list(), #xmlel{}) -> ok.
@@ -222,7 +267,7 @@ route_packet([{{server, Session}, NewFrom, NewTo}|Tail], Packet) ->
     Tmp = exmpp_stanza:set_sender(Packet, NewFrom),
     NewPacket = exmpp_stanza:set_recipient(Tmp, NewTo),
     send_packet(Session, NewPacket),
-    route_packet(Tail, Packet);    
+    route_packet(Tail, Packet);
 route_packet([], _Packet) ->
     ok.
 
@@ -252,3 +297,16 @@ client_spawn(User, Domain, Creds) ->
     catch
         _Class:Error -> {error, Error}
     end.
+
+-spec send_disconnect(pid(), list(), list()) -> any().
+send_disconnect(Session, SourceJid, TargetJid) ->
+    Component = list_to_binary(ej2j:get_app_env(component, ?COMPONENT)),
+
+    Payload = exmpp_xml:element('xcom:data', 'transport-disconnected'),
+    Payload1 = exmpp_xml:set_attribute(Payload, <<"source">>, TargetJid),
+
+    IQ = exmpp_iq:set(?NS_COMPONENT_ACCEPT, Payload1),
+    IQ1 = exmpp_xml:set_attribute(IQ, <<"to">>, SourceJid),
+    IQ2 = exmpp_xml:set_attribute(IQ1, <<"from">>, Component),
+
+    send_packet(Session, IQ2).

@@ -9,7 +9,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
          code_change/3]).
 
--export([add/4, get/2, del/1, free/0, update/2]).
+-export([add/4, get/2, get_client_jid/1, get_client_pid/1, del/1, free/0, update/2]).
 
 -include_lib("exmpp/include/exmpp_client.hrl").
 -include_lib("exmpp/include/exmpp_xml.hrl").
@@ -50,7 +50,7 @@ handle_call(free, _From, #state{route_db = Routes} = State) ->
     {reply, ok, State#state{route_db = NewRoutes}};
 handle_call({del, Key}, _From,
             #state{route_db = Routes} = State) when is_list(Key) ->
-    Refs = lists:flatten(ets:match(Routes, {Key, '_', '_', '$1'})),    
+    Refs = lists:flatten(ets:match(Routes, {Key, '_', '_', '$1'})),
     del_entry(Routes, Refs),
     {reply, ok, State};
 handle_call({del, Key}, _From,
@@ -64,6 +64,18 @@ handle_call({get, From, To}, _From, #state{route_db=Routes} = State) ->
     Records = get_entry(Routes, FromStr) ++ get_entry(Routes, ToStr),
     Result = make(Records, From, To, FromStr, ToStr, []),
     {reply, Result, State};
+
+handle_call({get_client_pid, From}, _From, #state{route_db=Routes} = State) ->
+    FromStr = exmpp_jid:to_list(From),
+    Records = get_entry(Routes, FromStr),
+    ClientPid = find_client_pid(Records),
+    {reply, ClientPid, State};
+
+handle_call({get_client_jid, Pid}, _From, #state{route_db=Routes} = State) ->
+    Clients = ets:match(Routes, {'$1', '$2', {client, Pid}, '_'}),
+    ClientJid = find_client_jid(Clients),
+    {reply, ClientJid, State};
+
 handle_call(get_state, _From, #state{route_db=Routes} = State) ->
     {reply, {state, {route_db, Routes}}, State};
 handle_call({update, Old, New}, _From, #state{route_db = Routes} = State) ->
@@ -116,6 +128,14 @@ del(Key) ->
 get(From, To) ->
     gen_server:call(?MODULE, {get, From, To}).
 
+-spec get_client_pid(any()) -> pid() | false.
+get_client_pid(From) ->
+    gen_server:call(?MODULE, {get_client_pid, From}).
+
+-spec get_client_jid(pid()) -> exmpp_jid:jid() | false.
+get_client_jid(Pid) ->
+    gen_server:call(?MODULE, {get_client_jid, Pid}).
+
 -spec update(any(), any()) -> ok.
 update(Old, New) ->
     gen_server:call(?MODULE, {update, Old, New}).
@@ -125,21 +145,21 @@ update(Old, New) ->
 -spec add_entry(any(), any(), any(), pid(), pid()) -> ok.
 add_entry(Routes, OwnerJID, ForeignJID, ClientSession, ServerSession) ->
     Ref = make_ref(),
-    ets:insert(Routes, {exmpp_jid:to_list(OwnerJID), 
-                        ForeignJID, 
-                        {client, ClientSession}, 
+    ets:insert(Routes, {exmpp_jid:to_list(OwnerJID),
+                        ForeignJID,
+                        {client, ClientSession},
                         Ref}),
     ets:insert(Routes, {exmpp_jid:to_list(ForeignJID),
                         OwnerJID,
                         {server, ServerSession},
                         Ref}),
     ets:insert(Routes, {exmpp_jid:bare_to_list(OwnerJID),
-                        exmpp_jid:bare(ForeignJID), 
-                        {client, ClientSession}, 
+                        exmpp_jid:bare(ForeignJID),
+                        {client, ClientSession},
                         Ref}),
-    ets:insert(Routes, {exmpp_jid:bare_to_list(ForeignJID), 
-                        exmpp_jid:bare(OwnerJID), 
-                        {server, ServerSession}, 
+    ets:insert(Routes, {exmpp_jid:bare_to_list(ForeignJID),
+                        exmpp_jid:bare(OwnerJID),
+                        {server, ServerSession},
                         Ref}),
     ok.
 
@@ -172,10 +192,10 @@ make([Record|Tail], From, To, FromStr, ToStr, Acc) ->
                              NewTo = exmpp_jid:make(Node, Domain, Resource),
                              [{Route, NewFrom, NewTo}|Acc]
                      end;
-                 {ToStr, NewTo, Route, _Ref} -> 
-                     Node = case exmpp_jid:node_as_list(From) of 
+                 {ToStr, NewTo, Route, _Ref} ->
+                     Node = case exmpp_jid:node_as_list(From) of
                                 undefined -> "";
-                                _Else -> string:join([exmpp_jid:node_as_list(From), 
+                                _Else -> string:join([exmpp_jid:node_as_list(From),
                                                       exmpp_jid:domain_as_list(From)], "%")
                             end,
                      Domain = ej2j:get_app_env(component, ?COMPONENT),
@@ -187,3 +207,26 @@ make([Record|Tail], From, To, FromStr, ToStr, Acc) ->
     make(Tail, From, To, FromStr, ToStr, NewAcc);
 make([], _From, _To, _FromStr, _ToStr, Acc) ->
     lists:reverse(Acc).
+
+-spec find_client_pid(list()) -> pid() | false.
+find_client_pid([Record|Tail]) ->
+    case Record of
+        {_, _, {client, Pid}, _} ->
+            Pid;
+        _ ->
+            find_client_pid(Tail)
+    end;
+find_client_pid([]) ->
+    false.
+
+-spec find_client_jid(list()) -> {list(), list()} | false.
+find_client_jid([[Source, TargetJID]|Tail]) ->
+    Parsed = exmpp_jid:parse(Source),
+    case exmpp_jid:resource_as_list(Parsed) of
+        undefined ->
+            find_client_jid(Tail);
+        _ ->
+            {Source, exmpp_jid:to_list(TargetJID)}
+    end;
+find_client_jid([]) ->
+    false.
