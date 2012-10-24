@@ -1,3 +1,10 @@
+ej2j (0.0.5) unstable; urgency=low
+
+  * Handle client disconnections properly
+  * When facebook drops connection, send stanza to client
+
+ -- Serge S. Koval <serge.koval+github@gmail.com>  Wed, 24 Oct 2012 15:22:35 +0300
+
 ej2j (0.0.4-1) unstable; urgency=low
 
   * Add Facebook OAuth support
