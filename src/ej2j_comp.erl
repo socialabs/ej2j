@@ -45,10 +45,6 @@ get_client_pid(FromJID) ->
 
 -spec init([]) -> {ok, #state{}}.
 init([]) ->
-    %% Contribute known NS and stanza elements
-    exmpp_xml:add_known_nss(xmpp, ['xcom:data']),
-    exmpp_xml:add_known_elems(xmpp, ['transport-disconnected']),
-
     %% Initialize
     process_flag(trap_exit, true),
     erlang:send_after(0, self(), state),
@@ -106,9 +102,8 @@ handle_info({'EXIT', Pid, _}, #state{session = Session} = State) ->
     case ej2j_route:get_client_jid(Pid) of
         false ->
             ok;
-        {SourceJid, TargetJid} ->
-            send_disconnect(Session, SourceJid, TargetJid),
-
+        {SourceJid, _} ->
+            send_disconnect(Session, SourceJid),
             ej2j_route:del(Pid)
     end,
     {noreply, State};
@@ -207,6 +202,15 @@ process_iq(Session, "set", ?NS_INBAND_REGISTER, IQ) ->
         _Class:_Error ->
 	    send_packet(Session, exmpp_iq:error(IQ, forbidden))
     end;
+%% XMPP ping
+process_iq(Session, "get", ?NS_PING, IQ) ->
+    SenderJID = exmpp_jid:parse(exmpp_stanza:get_sender(IQ)),
+    case get_client_pid(SenderJID) of
+        false ->
+            send_packet(Session, exmpp_iq:error(IQ, 'service-unavailable'));
+        _ ->
+            send_packet(Session, exmpp_iq:result(IQ))
+    end;
 process_iq(_Session, _Type, _NS, IQ) ->
     process_generic(IQ).
 
@@ -298,15 +302,13 @@ client_spawn(User, Domain, Creds) ->
         _Class:Error -> {error, Error}
     end.
 
--spec send_disconnect(pid(), list(), list()) -> any().
-send_disconnect(Session, SourceJid, TargetJid) ->
+-spec send_disconnect(pid(), list()) -> any().
+send_disconnect(Session, SourceJid) ->
     Component = list_to_binary(ej2j:get_app_env(component, ?COMPONENT)),
 
-    Payload = exmpp_xml:element('xcom:data', 'transport-disconnected'),
-    Payload1 = exmpp_xml:set_attribute(Payload, <<"source">>, TargetJid),
+    Presence0 = exmpp_xml:element(?NS_COMPONENT_ACCEPT, 'presence'),
+    Presence1 = exmpp_presence:set_type(Presence0, 'unavailable'),
+    Presence2 = exmpp_xml:set_attribute(Presence1, <<"to">>, SourceJid),
+    Presence = exmpp_xml:set_attribute(Presence2, <<"from">>, Component),
 
-    IQ = exmpp_iq:set(?NS_COMPONENT_ACCEPT, Payload1),
-    IQ1 = exmpp_xml:set_attribute(IQ, <<"to">>, SourceJid),
-    IQ2 = exmpp_xml:set_attribute(IQ1, <<"from">>, Component),
-
-    send_packet(Session, IQ2).
+    send_packet(Session, Presence).
