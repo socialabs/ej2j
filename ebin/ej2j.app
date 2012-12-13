@@ -3,7 +3,7 @@
   {description, "Erlang Jabber-to-Jabber transport"},
   {vsn, "0.0.4"},
   {id, "ej2j"},
-  {modules, [ej2j, ej2j_comp, ej2j_helper, ej2j_route]},
+  {modules, [ej2j, ej2j_comp, ej2j_helper, ej2j_route, ej2j_heapq]},
   {registered, [ej2j, ej2j_comp, ej2j_route]},
   {mod, {ej2j, []}},
   {env, []},

@@ -12,6 +12,8 @@
 
 -define(RESTART_DELAY, 1000).
 -define(CHECK_INTERVAL, 300000).
+-define(CULL_INTERVAL, 60000).
+-define(PING, 60).
 
 -include_lib("exmpp/include/exmpp_client.hrl").
 -include_lib("exmpp/include/exmpp_xml.hrl").
@@ -48,6 +50,8 @@ init([]) ->
     %% Initialize
     process_flag(trap_exit, true),
     erlang:send_after(0, self(), state),
+    %% Session timeouts
+    erlang:send_after(?CULL_INTERVAL, self(), cull),
     {ok, #state{}}.
 
 -spec handle_call(any(), any(), #state{}) -> {reply, any(), #state{}} |
@@ -85,7 +89,14 @@ handle_call(_Msg, _From, State) ->
 -spec handle_info(any(), #state{}) -> {noreply, #state{}}.
 handle_info(#received_packet{} = Packet, #state{session = Session} = State) ->
     error_logger:info_msg("Packet received: ~p~n", [Packet]),
-    spawn_link(fun() -> process_received_packet(Session, Packet) end),
+    spawn_link(fun() ->
+        %% Bump counter
+        From = exmpp_stanza:get_sender(Packet#received_packet.raw_packet),
+        ej2j_route:notify(From),
+
+        %% Process packet
+        process_received_packet(Session, Packet)
+    end),
     {noreply, State};
 
 handle_info(#received_packet{packet_type = Type, raw_packet = Packet}, State) ->
@@ -104,7 +115,7 @@ handle_info({'EXIT', Pid, _}, #state{session = Session} = State) ->
             ok;
         {SourceJid, _} ->
             send_disconnect(Session, SourceJid),
-            ej2j_route:del(Pid)
+            ej2j_route:del(SourceJid)
     end,
     {noreply, State};
 
@@ -115,6 +126,14 @@ handle_info(state, #state{session = undefined} = State) ->
 handle_info(state, State) ->
     erlang:send_after(?CHECK_INTERVAL, ?MODULE, state),
     {noreply, State};
+
+handle_info(cull, State) ->
+    Timeout = ej2j:get_app_env(connection_timeout, ?CONNECTION_TIMEOUT),
+    Expired = ej2j_route:get_expired(Timeout),
+    lists:foreach(fun({_JID, Pid}) -> exmpp_session:stop(Pid) end, Expired),
+    erlang:send_after(?CULL_INTERVAL, self(), cull),
+    {noreply, State};
+
 handle_info(_Msg, State) ->
     {noreply, State}.
 
@@ -202,15 +221,30 @@ process_iq(Session, "set", ?NS_INBAND_REGISTER, IQ) ->
         _Class:_Error ->
 	    send_packet(Session, exmpp_iq:error(IQ, forbidden))
     end;
+
 %% XMPP ping
 process_iq(Session, "get", ?NS_PING, IQ) ->
-    SenderJID = exmpp_jid:parse(exmpp_stanza:get_sender(IQ)),
-    case get_client_pid(SenderJID) of
-        false ->
-            send_packet(Session, exmpp_iq:error(IQ, 'service-unavailable'));
+    From = exmpp_stanza:get_sender(IQ),
+    To = exmpp_stanza:get_recipient(IQ),
+    Component = list_to_binary(ej2j:get_app_env(component, ?COMPONENT)),
+
+    % TODO: Check direction
+
+    case To of
+        Component ->
+            send_packet(Session, exmpp_iq:result(IQ));
         _ ->
-            send_packet(Session, exmpp_iq:result(IQ))
+            FromJID = exmpp_jid:parse(From),
+            ToJID = exmpp_jid:parse(To),
+            Routes = get_routes(FromJID, ToJID),
+            case Routes of
+                [] ->
+                    send_packet(Session, exmpp_iq:error(IQ, 'service-unavailable'));
+                _ ->
+                    send_packet(Session, exmpp_iq:result(IQ))
+            end
     end;
+
 process_iq(_Session, _Type, _NS, IQ) ->
     process_generic(IQ).
 
@@ -294,7 +328,8 @@ client_spawn(User, Domain, Creds) ->
                 exmpp_session:auth_info(Session, FullJID, Creds),
                 Method = "DIGEST-MD5"
         end,
-        Connect = exmpp_session:connect_TCP(Session, Domain, 5222),
+        Connect = exmpp_session:connect_TCP(Session, Domain, 5222,
+                                            [{whitespace_ping, ?PING}]),
         ok = element(1, Connect),
         {ok, FullJID} = exmpp_session:login(Session, Method),
         {ok, {FullJID, Session}}

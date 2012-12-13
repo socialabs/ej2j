@@ -7,3 +7,5 @@
 
 -define(TEXT_FORM, "Enter the credentials:").
 -define(TEXT_REG, "Use the enclosed form to register.").
+
+-define(CONNECTION_TIMEOUT, 120).
