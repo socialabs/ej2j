@@ -3,7 +3,8 @@
 
 -module(ej2j_helper).
 
--export([component/0, disco_info/0, inband_register/0, form_parse/1, form_field/2, now_seconds/0]).
+-export([component/0, disco_info/0, inband_register/0, form_parse/1, form_field/2, now_seconds/0,
+         unavailable_presence/2, encode_jid/1, encode_jid/2, decode_jid/1]).
 
 -include_lib("exmpp/include/exmpp_client.hrl").
 -include_lib("exmpp/include/exmpp_xml.hrl").
@@ -82,7 +83,51 @@ form_parse(Form) ->
 form_field(Form, Name) ->
     binary_to_list(element(2, lists:keyfind(Name, 1, Form))).
 
+-spec unavailable_presence(list(), list()) -> #xmlel{}.
+unavailable_presence(From, To) ->
+    Presence0 = exmpp_xml:element(?NS_COMPONENT_ACCEPT, 'presence'),
+    Presence1 = exmpp_presence:set_type(Presence0, 'unavailable'),
+    Presence2 = exmpp_xml:set_attribute(Presence1, <<"to">>, To),
+    exmpp_xml:set_attribute(Presence2, <<"from">>, From).
+
 -spec now_seconds() -> int.
 now_seconds() ->
     Time = calendar:now_to_universal_time(erlang:now()),
     calendar:datetime_to_gregorian_seconds(Time).
+
+% JID conversion helpers
+decode_jid(JID) ->
+    case exmpp_jid:node_as_list(JID) of
+        undefined ->
+            false;
+        OldNode ->
+            case string:chr(OldNode, $%) of
+                0 ->
+                    false;
+                _ ->
+                    [Node, Domain] = string:tokens(OldNode, "%"),
+                    Resource = exmpp_jid:resource_as_list(JID),
+                    exmpp_jid:make(Node, Domain, Resource)
+            end
+    end.
+
+encode_jid(JID, AddResource) ->
+    case exmpp_jid:node_as_list(JID) of
+        undefined ->
+            false;
+        _ ->
+            Node = string:join([exmpp_jid:node_as_list(JID),
+                                exmpp_jid:domain_as_list(JID)], "%"),
+            Domain = ej2j:get_app_env(component, ?COMPONENT),
+
+            case AddResource of
+                true ->
+                    Resource = exmpp_jid:resource_as_list(JID),
+                    exmpp_jid:make(Node, Domain, Resource);
+                false ->
+                    exmpp_jid:make(Node, Domain)
+            end
+    end.
+
+encode_jid(JID) ->
+    encode_jid(JID, true).
