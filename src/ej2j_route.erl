@@ -87,8 +87,8 @@ handle_call({get_client_jid, Pid}, _From, #state{pid_db = Pids} = State) ->
     end,
     {reply, Result, State};
 
-handle_call(get_state, _From, #state{route_db=Routes} = State) ->
-    {reply, {state, {route_db, Routes}}, State};
+handle_call(get_state, _From, #state{route_db=Routes, pid_db=Pids} = State) ->
+    {reply, {state, {route_db, Routes}, {pid_db, Pids}}, State};
 
 handle_call({get_expired, Delta}, _From, #state{route_db = Routes, queue = Queue} = State) ->
     Deadline = ej2j_helper:now_seconds() - Delta,

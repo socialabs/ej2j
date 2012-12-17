@@ -229,8 +229,7 @@ process_iq(Session, "get", ?NS_PING, IQ) ->
                 false ->
                     send_packet(Session, exmpp_iq:error(IQ, 'service-unavailable'));
                 _ ->
-                    send_packet(Session, exmpp_iq:result(IQ)),
-                    exmpp_session:stop(Pid)
+                    send_packet(Session, exmpp_iq:result(IQ))
             end
     end;
 
