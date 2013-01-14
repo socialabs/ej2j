@@ -54,7 +54,7 @@ handle_call(stop, _From, State) ->
 
 handle_call({start_client, FromJID, ForeignJID, Creds}, _From,
             #state{session = ServerS} = State) ->
-    Bare = exmpp_jid:bare(FromJID),
+    Bare = exmpp_jid:bare_to_binary(FromJID),
 
     %% If there's already opened connection, just add new mapping
     case ej2j_route:get_remote(Bare) of
@@ -246,6 +246,8 @@ process_iq(_Session, _Type, _NS, IQ) ->
 
 -spec process_presence(pid(), #xmlel{}) -> ok.
 process_presence(_Session, Presence) ->
+    error_logger:info_msg("!!! Presence: ~p~n", [Presence]),
+
     Type = exmpp_xml:get_attribute(Presence, <<"type">>, <<"">>),
     case Type of
         <<"unavailable">> ->
@@ -270,7 +272,8 @@ route_packet(Sender, Recipient, Packet) when Sender =/= undefined,
                                               Recipient =/= undefined ->
     FromJID = exmpp_jid:parse(Sender),
     ToJID = exmpp_jid:parse(Recipient),
-    Routes = ej2j_route:get_route(FromJID, ToJID),
+    PacketID = exmpp_stanza:get_id(Packet),
+    Routes = ej2j_route:get_route(FromJID, ToJID, PacketID),
     route_packet(Routes, Packet);
 route_packet(_Sender, _Recipient, _Packet) ->
     ok.
@@ -279,7 +282,7 @@ route_packet(_Sender, _Recipient, _Packet) ->
 route_packet([{client, Session, NewFrom, NewTo, NewID}|Tail], Packet) ->
     Tmp1 = exmpp_stanza:set_sender(Packet, NewFrom),
     Tmp2 = exmpp_stanza:set_recipient(Tmp1, NewTo),
-    NewPacket = exmpp_stanza:set_id(NewID),
+    NewPacket = exmpp_stanza:set_id(Tmp2, NewID),
     exmpp_session:send_packet(Session, NewPacket),
     route_packet(Tail, Packet);
 
@@ -324,8 +327,8 @@ client_spawn(User, Domain, Creds) ->
 drop_client(JID) ->
     case ej2j_route:del_client(JID) of
         true ->
-            Bare = exmpp_jid:bare(JID),
-            drop_connection(exmpp_jid:bare(JID));
+            Bare = exmpp_jid:bare_to_binary(JID),
+            drop_connection(Bare);
         _ ->
             ok
     end.

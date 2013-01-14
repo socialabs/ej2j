@@ -51,10 +51,20 @@ handle_call({add_route, LocalJID, RemoteJID, ClientS, ServerS},
     NewQueue = queue_notify(Queue, LocalJID),
     {reply, ok, State#state{queue = NewQueue}};
 
-handle_call({get_route, LocalAddr, RemoteAddr, StanzaID},
+handle_call({get_route, LocalJID, RemoteJID, StanzaID},
             _From, #state{route_db=RouteDb, conn_db=ConnDb} = State) ->
-    Records = get_entry(RouteDb, LocalAddr) ++ get_entry(RouteDb, RemoteAddr),
-    Result = make(ConnDb, Records, LocalAddr, RemoteAddr, StanzaID, []),
+    Bare = exmpp_jid:bare_to_binary(LocalJID),
+    Remote = exmpp_jid:to_binary(RemoteJID),
+    %% If stanza does not have ID, add it
+    ID = case StanzaID of
+        undefined ->
+            exmpp_utils:random_id();
+        Value ->
+            Value
+    end,
+    %% We match local outgoing using bare JID and incoming using full remote JID binaries
+    Records = get_entry(RouteDb, Bare) ++ get_entry(RouteDb, Remote),
+    Result = make(ConnDb, Records, LocalJID, RemoteJID, ID, []),
     {reply, Result, State};
 
 handle_call({get_remote, Bare}, _From, #state{route_db=RouteDb} = State) ->
@@ -77,7 +87,7 @@ handle_call({get_client_jid, Pid}, _From, #state{pid_db = PidDb} = State) ->
 
 handle_call({del_client, JID}, _From,
             #state{conn_db=ConnDb} = State) ->
-    Bare = exmpp_jid:bare(JID),
+    Bare = exmpp_jid:bare_to_binary(JID),
     Resource = exmpp_jid:resource(JID),
     Result = drop_client(ConnDb, Bare, Resource),
     {reply, Result, State};
@@ -91,8 +101,8 @@ handle_call({del_route, JID}, _From,
 %% TODO: Rename me
 handle_call({get_all_clients, Bare}, _From, #state{conn_db=ConnDb} = State) ->
     Items = ets:match(ConnDb, {Bare, '$1', '_'}),
-    Result = list:map(fun([Item]) ->
-                        <<Bare/binary, "/", Item/binary>>
+    Result = list:map(fun([Resource]) ->
+                        <<Bare/binary, "/", Resource/binary>>
                       end, Items),
     {reply, Result, State};
 
@@ -112,7 +122,7 @@ handle_info(_Msg, State) ->
 handle_cast({notify, JID}, #state{conn_db=ConnDb} = State) ->
     Now = ej2j_helper:now_seconds(),
     %% TODO: Separate 'set' table to speed things up?
-    Bare = exmpp_jid:bare(JID),
+    Bare = exmpp_jid:bare_to_binary(JID),
     Resource = exmpp_jid:resource(JID),
     case get_source_entry(ConnDb, Bare, Resource) of
         {Bare, Resource, LastUpdate} ->
@@ -152,7 +162,7 @@ del_client(JID) ->
 del_route(JID) ->
     gen_server:call(?MODULE, {del_route, JID}).
 
-get_route(FromJID, ToJID, StanzaID) when is_binary(StanzaID) ->
+get_route(FromJID, ToJID, StanzaID) ->
     gen_server:call(?MODULE, {get_route, FromJID, ToJID, StanzaID}).
 
 get_remote(Bare) when is_binary(Bare) ->
@@ -189,14 +199,14 @@ get_source_entry(ConnDb, Bare, Resource) ->
 
 add_entry(RouteDb, ConnDb, PidDb, LocalJID, RemoteJID, ClientS, ServerS) ->
     Remote = exmpp_jid:to_binary(RemoteJID),
-    Bare = exmpp_jid:bare(LocalJID),
+    Bare = exmpp_jid:bare_to_binary(LocalJID),
     Resource = exmpp_jid:resource(LocalJID),
 
     % Check if present in the routes table
     case get_entry(RouteDb, Bare) of
         [] ->
-            ets:insert(RouteDb, Bare, Remote, client, ClientS),
-            ets:insert(RouteDb, Remote, Bare, server, ServerS);
+            ets:insert(RouteDb, {Bare, Remote, client, ClientS}),
+            ets:insert(RouteDb, {Remote, Bare, server, ServerS});
         _ ->
             ok
     end,
@@ -204,7 +214,7 @@ add_entry(RouteDb, ConnDb, PidDb, LocalJID, RemoteJID, ClientS, ServerS) ->
     case get_source_entry(ConnDb, Bare, Resource) of
         false ->
             Now = ej2j_helper:now_seconds(),
-            ets:insert(ConnDb, Bare, Resource, Now);
+            ets:insert(ConnDb, {Bare, Resource, Now});
         _ ->
             ok
     end,
@@ -240,16 +250,20 @@ drop_entry(RouteDb, ConnDb, PidDb, Key) ->
     end.
 
 -spec make(list(), any(), any(), list(), list(), list()) -> list().
-make(ConnDb, [Record|Tail], From, To, StanzaID, Acc) ->
+make(ConnDb, [Record|Tail], FromJID, ToJID, StanzaID, Acc) ->
     % TODO: Change what is matched and how
+    error_logger:info_msg("MAKE: ~p -> ~p (~p) = ~p~n", [FromJID, ToJID, StanzaID, Record]),
+
     NewAcc = case Record of
                  {_, NewFrom, client, Pid} ->
-                    case ej2j_helper:decode_jid(From) of
+                    case ej2j_helper:decode_jid(ToJID) of
                         false ->
+                            error_logger:info_msg("NewTO = FAIL~n", []),
                             Acc;
                         NewTo ->
+                            error_logger:info_msg("NewTO ~p~n", [NewTo]),
+
                             % Generate new stanza ID
-                            FromJID = exmpp_jid:parse(From),
                             Resource = exmpp_jid:resource(FromJID),
                             NewID = <<Resource/binary, "_", StanzaID/binary>>,
 
@@ -257,7 +271,7 @@ make(ConnDb, [Record|Tail], From, To, StanzaID, Acc) ->
                             [{client, Pid, NewFrom, NewTo, NewID}|Acc]
                      end;
                  {_, Bare, server, Pid} ->
-                    case ej2j_helper:encode_jid(From) of
+                    case ej2j_helper:encode_jid(FromJID) of
                         false ->
                             Acc;
                         NewFrom ->
@@ -269,29 +283,40 @@ make(ConnDb, [Record|Tail], From, To, StanzaID, Acc) ->
                     end;
                  _ -> Acc
              end,
-    make(ConnDb, Tail, From, To, StanzaID, NewAcc);
-make([], _From, _To, _FromStr, _ToStr, Acc) ->
+    make(ConnDb, Tail, FromJID, ToJID, StanzaID, NewAcc);
+make(_ConnDb, [], _From, _To, _StanzaID, Acc) ->
     lists:reverse(Acc).
 
 % Parse ID and try to get resource from it
-get_recipient(ConnDb, Bare, ID) ->
+get_recipient(ConnDb, Bare, ID) when is_binary(ID) ->
     Parts = binary:split(ID, <<"_">>),
     case Parts of
         [Resource|NewID] ->
             case get_source_entry(ConnDb, Bare, Resource) of
                 false ->
-                    {Bare, ID};
+                    {get_any_resource(ConnDb, Bare), ID};
                 _ ->
                     NewTo = <<Bare/binary, "/", Resource/binary>>,
                     {NewTo, NewID}
             end;
         _ ->
             {Bare, ID}
+    end;
+get_recipient(ConnDb, Bare, ID) ->
+    {get_any_resource(ConnDb, Bare), ID}.
+
+
+get_any_resource(ConnDb, Bare) ->
+    case ets:match(ConnDb, {Bare, '$1', '_'}) of
+        [[Resource]|_Tail] ->
+            <<Bare/binary, "/", Resource/binary>>;
+        _ ->
+            Bare
     end.
 
 % Queue stuff
 queue_notify(Queue, JID) ->
-    Bare = exmpp_jid:bare(JID),
+    Bare = exmpp_jid:bare_to_binary(JID),
     Resource = exmpp_jid:resource(JID),
     ej2j_heapq:add(Queue, {ej2j_helper:now_seconds(), JID, Bare, Resource}).
 
