@@ -204,7 +204,7 @@ process_iq(Session, "get", ?NS_INBAND_REGISTER, IQ) ->
 
 process_iq(Session, "set", ?NS_INBAND_REGISTER, IQ) ->
     SenderJID = exmpp_jid:parse(exmpp_stanza:get_sender(IQ)),
-    try
+    %%try
         Payload = exmpp_iq:get_payload(IQ),
         FormElement = exmpp_xml:get_element(Payload, ?NS_DATA_FORMS, 'x'),
         Form = ej2j_helper:form_parse(FormElement),
@@ -213,11 +213,11 @@ process_iq(Session, "set", ?NS_INBAND_REGISTER, IQ) ->
 
         ok = start_client(SenderJID, JID, Password),
 
-        send_packet(Session, exmpp_iq:result(IQ))
-    catch
-        _Class:_Error ->
-	       send_packet(Session, exmpp_iq:error(IQ, forbidden))
-    end;
+        send_packet(Session, exmpp_iq:result(IQ));
+    %%catch
+    %%    _Class:_Error ->
+	%%       send_packet(Session, exmpp_iq:error(IQ, forbidden))
+    %%end;
 
 %% XMPP ping
 process_iq(Session, "get", ?NS_PING, IQ) ->
@@ -273,6 +273,11 @@ route_packet(Sender, Recipient, Packet) when Sender =/= undefined,
     FromJID = exmpp_jid:parse(Sender),
     ToJID = exmpp_jid:parse(Recipient),
     PacketID = exmpp_stanza:get_id(Packet),
+
+    case PacketID of
+        undefined ->
+
+
     Routes = ej2j_route:get_route(FromJID, ToJID, PacketID),
     route_packet(Routes, Packet);
 route_packet(_Sender, _Recipient, _Packet) ->

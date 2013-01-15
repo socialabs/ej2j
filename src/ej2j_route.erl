@@ -125,11 +125,11 @@ handle_cast({notify, JID}, #state{conn_db=ConnDb} = State) ->
     Bare = exmpp_jid:bare_to_binary(JID),
     Resource = exmpp_jid:resource(JID),
     case get_source_entry(ConnDb, Bare, Resource) of
-        {Bare, Resource, LastUpdate} ->
-            ets:delete_object(ConnDb, {Bare, Resource, LastUpdate}),
-            ets:insert(ConnDb, {Bare, Resource, Now});
+        false ->
+            ok;
         _ ->
-            ok
+            ets:match_delete(ConnDb, {Bare, Resource, '_'}),
+            ets:insert(ConnDb, {Bare, Resource, Now})
     end,
     {noreply, State};
 
@@ -224,14 +224,11 @@ add_entry(RouteDb, ConnDb, PidDb, LocalJID, RemoteJID, ClientS, ServerS) ->
     ok.
 
 drop_client(ConnDb, Base, Resource) ->
-    case get_source_entry(ConnDb, Base, Resource) of
-        {Base, Resource, LastUpdate} ->
-            ets:delete_object(ConnDb, {Base, Resource, LastUpdate});
-        _ ->
-            ok
-    end,
+    %% Drop entry
+    ets:match_delete(ConnDb, {Base, Resource, '_'}),
     %% Return true if there are no local connections left
-    case ets:select_count(ConnDb, {Base, '_', '_'}) of
+    %% TODO: Fix me
+    case ets:select_count(ConnDb, [{{Base, _, _}, [], [ok]) of
         0 ->
             true;
         _ ->
@@ -306,6 +303,7 @@ get_recipient(ConnDb, Bare, ID) ->
     {get_any_resource(ConnDb, Bare), ID}.
 
 
+% Return first matching resource for Bare JID
 get_any_resource(ConnDb, Bare) ->
     case ets:match(ConnDb, {Bare, '$1', '_'}) of
         [[Resource]|_Tail] ->
