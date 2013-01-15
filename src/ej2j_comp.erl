@@ -13,6 +13,7 @@
 -define(RESTART_DELAY, 1000).
 -define(CHECK_INTERVAL, 300000).
 -define(CULL_INTERVAL, 60000).
+%%-define(CULL_INTERVAL, 1000).
 -define(PING, 60).
 
 -include_lib("exmpp/include/exmpp_client.hrl").
@@ -64,14 +65,14 @@ handle_call({start_client, FromJID, ForeignJID, Creds}, _From,
             case client_spawn(User, Domain, Creds) of
         	    {ok, {ToJID, ClientS}} ->
                     ok = ej2j_route:add_route(FromJID, ToJID, ClientS, ServerS),
-                    {reply, {ok, ClientS}, State};
+                    {reply, ok, State};
                 {error, Error} ->
                     {reply, {error, Error}, State}
             end;
         {Remote, ClientS} ->
             RemoteJID = exmpp_jid:parse(Remote),
             ok = ej2j_route:add_route(FromJID, RemoteJID, ClientS, ServerS),
-            {reply, {ok, ClientS}, State}
+            {reply, ok, State}
     end;
 
 handle_call(_Msg, _From, State) ->
@@ -108,7 +109,7 @@ handle_info({'EXIT', Pid, _}, #state{session = Session} = State) ->
             % Broadcast presence unavailable stanza to all clients
             Connections = ej2j_route:get_all_clients(Bare),
             From = exmpp_jid:to_binary(ej2j_helper:encode_jid(RemoteJID, false)),
-            lists:each(fun(To) ->
+            lists:foreach(fun(To) ->
                          send_packet(Session, ej2j_helper:unavailable_presence(From, To))
                        end, Connections),
             % Remove mapping
@@ -221,7 +222,7 @@ process_iq(Session, "set", ?NS_INBAND_REGISTER, IQ) ->
 
 %% XMPP ping
 process_iq(Session, "get", ?NS_PING, IQ) ->
-    From = exmpp_stanza:get_sender(IQ),
+    From = exmpp_jid:parse(exmpp_stanza:get_sender(IQ)),
     To = exmpp_stanza:get_recipient(IQ),
     Component = list_to_binary(ej2j:get_app_env(component, ?COMPONENT)),
 
@@ -232,7 +233,7 @@ process_iq(Session, "get", ?NS_PING, IQ) ->
             send_packet(Session, exmpp_iq:result(IQ));
         _ ->
             % TODO: Parse target address?
-            Pid = ej2j_route:get_remote(exmpp_jid:parse(From)),
+            Pid = ej2j_route:get_remote(exmpp_jid:bare_to_binary(From)),
             case Pid of
                 false ->
                     send_packet(Session, exmpp_iq:error(IQ, 'service-unavailable'));
@@ -273,11 +274,6 @@ route_packet(Sender, Recipient, Packet) when Sender =/= undefined,
     FromJID = exmpp_jid:parse(Sender),
     ToJID = exmpp_jid:parse(Recipient),
     PacketID = exmpp_stanza:get_id(Packet),
-
-    case PacketID of
-        undefined ->
-
-
     Routes = ej2j_route:get_route(FromJID, ToJID, PacketID),
     route_packet(Routes, Packet);
 route_packet(_Sender, _Recipient, _Packet) ->
@@ -330,6 +326,7 @@ client_spawn(User, Domain, Creds) ->
     end.
 
 drop_client(JID) ->
+    error_logger:info_msg("Dropping: ~p~n", [JID]),
     case ej2j_route:del_client(JID) of
         true ->
             Bare = exmpp_jid:bare_to_binary(JID),

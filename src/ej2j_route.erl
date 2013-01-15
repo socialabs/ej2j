@@ -55,16 +55,9 @@ handle_call({get_route, LocalJID, RemoteJID, StanzaID},
             _From, #state{route_db=RouteDb, conn_db=ConnDb} = State) ->
     Bare = exmpp_jid:bare_to_binary(LocalJID),
     Remote = exmpp_jid:to_binary(RemoteJID),
-    %% If stanza does not have ID, add it
-    ID = case StanzaID of
-        undefined ->
-            exmpp_utils:random_id();
-        Value ->
-            Value
-    end,
     %% We match local outgoing using bare JID and incoming using full remote JID binaries
     Records = get_entry(RouteDb, Bare) ++ get_entry(RouteDb, Remote),
-    Result = make(ConnDb, Records, LocalJID, RemoteJID, ID, []),
+    Result = make(ConnDb, Records, LocalJID, RemoteJID, StanzaID, []),
     {reply, Result, State};
 
 handle_call({get_remote, Bare}, _From, #state{route_db=RouteDb} = State) ->
@@ -92,16 +85,15 @@ handle_call({del_client, JID}, _From,
     Result = drop_client(ConnDb, Bare, Resource),
     {reply, Result, State};
 
-handle_call({del_route, JID}, _From,
+handle_call({del_route, Key}, _From,
             #state{route_db=RouteDb, conn_db=ConnDb, pid_db=PidDb} = State) ->
-    Key = exmpp_jid:to_binary(JID),
     drop_entry(RouteDb, ConnDb, PidDb, Key),
     {reply, ok, State};
 
 %% TODO: Rename me
 handle_call({get_all_clients, Bare}, _From, #state{conn_db=ConnDb} = State) ->
     Items = ets:match(ConnDb, {Bare, '$1', '_'}),
-    Result = list:map(fun([Resource]) ->
+    Result = lists:map(fun([Resource]) ->
                         <<Bare/binary, "/", Resource/binary>>
                       end, Items),
     {reply, Result, State};
@@ -159,8 +151,8 @@ del_client(JID) ->
     gen_server:call(?MODULE, {del_client, JID}).
 
 % Delete route
-del_route(JID) ->
-    gen_server:call(?MODULE, {del_route, JID}).
+del_route(Key) when is_binary(Key) ->
+    gen_server:call(?MODULE, {del_route, Key}).
 
 get_route(FromJID, ToJID, StanzaID) ->
     gen_server:call(?MODULE, {get_route, FromJID, ToJID, StanzaID}).
@@ -223,25 +215,29 @@ add_entry(RouteDb, ConnDb, PidDb, LocalJID, RemoteJID, ClientS, ServerS) ->
     ets:insert(PidDb, {ClientS, Bare, RemoteJID}),
     ok.
 
-drop_client(ConnDb, Base, Resource) ->
+drop_client(ConnDb, Bare, Resource) ->
     %% Drop entry
-    ets:match_delete(ConnDb, {Base, Resource, '_'}),
+    ets:match_delete(ConnDb, {Bare, Resource, '_'}),
+
+    error_logger:info_msg("-=-=-=-=-=-~n~n Drop: ~p~p~n Info: ~p~n~n-=-=-=-=-=-=-~n", [Bare, Resource, ets:match(ConnDb, {Bare, '$1', '_'})]),
+
     %% Return true if there are no local connections left
-    %% TODO: Fix me
-    case ets:select_count(ConnDb, [{{Base, _, _}, [], [ok]) of
-        0 ->
+    %% TODO: Use select_count?
+    case ets:match(ConnDb, {Bare, '_', '_'}) of
+        [] ->
             true;
         _ ->
             false
     end.
 
+
 drop_entry(RouteDb, ConnDb, PidDb, Key) ->
     case get_entry(RouteDb, Key) of
         [{_, Remote, client, Pid}] ->
-            ets:remove(RouteDb, Key),
-            ets:remove(RouteDb, Remote),
-            ets:remove(ConnDb, Key),
-            ets:remove(PidDb, Pid);
+            ets:delete(RouteDb, Key),
+            ets:delete(RouteDb, Remote),
+            ets:delete(ConnDb, Key),
+            ets:delete(PidDb, Pid);
         [{_, Source, server, _}] ->
             drop_entry(RouteDb, ConnDb, PidDb, Source)
     end.
@@ -261,8 +257,7 @@ make(ConnDb, [Record|Tail], FromJID, ToJID, StanzaID, Acc) ->
                             error_logger:info_msg("NewTO ~p~n", [NewTo]),
 
                             % Generate new stanza ID
-                            Resource = exmpp_jid:resource(FromJID),
-                            NewID = <<Resource/binary, "_", StanzaID/binary>>,
+                            NewID = get_new_id(StanzaID, exmpp_jid:resource(FromJID)),
 
                             % Add route
                             [{client, Pid, NewFrom, NewTo, NewID}|Acc]
@@ -311,6 +306,13 @@ get_any_resource(ConnDb, Bare) ->
         _ ->
             Bare
     end.
+
+get_new_id(StanzaID, Resource) when is_binary(StanzaID), is_binary(Resource) ->
+    <<Resource/binary, "_", StanzaID/binary>>;
+get_new_id(StanzaID, undefined) ->
+    StanzaID;
+get_new_id(_StanzaID, _Resource) ->
+    undefined.
 
 % Queue stuff
 queue_notify(Queue, JID) ->
