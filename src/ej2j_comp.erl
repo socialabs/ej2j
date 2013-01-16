@@ -80,7 +80,7 @@ handle_call(_Msg, _From, State) ->
 
 -spec handle_info(any(), #state{}) -> {noreply, #state{}}.
 handle_info(#received_packet{} = Packet, #state{session = Session} = State) ->
-    error_logger:info_msg("Packet received: ~p~n", [Packet]),
+    %%error_logger:info_msg("Packet received: ~p~n", [Packet]),
     spawn_link(fun() ->
         %% Bump counter
         FromJID = exmpp_jid:parse(exmpp_stanza:get_sender(Packet#received_packet.raw_packet)),
@@ -247,8 +247,6 @@ process_iq(_Session, _Type, _NS, IQ) ->
 
 -spec process_presence(pid(), #xmlel{}) -> ok.
 process_presence(_Session, Presence) ->
-    error_logger:info_msg("!!! Presence: ~p~n", [Presence]),
-
     Type = exmpp_xml:get_attribute(Presence, <<"type">>, <<"">>),
     case Type of
         <<"unavailable">> ->
@@ -326,7 +324,7 @@ client_spawn(User, Domain, Creds) ->
     end.
 
 drop_client(JID) ->
-    error_logger:info_msg("Dropping: ~p~n", [JID]),
+    %error_logger:info_msg("Dropping: ~p~n", [JID]),
     case ej2j_route:del_client(JID) of
         true ->
             Bare = exmpp_jid:bare_to_binary(JID),

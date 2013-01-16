@@ -101,32 +101,31 @@ decode_jid(JID) ->
         undefined ->
             false;
         OldNode ->
+            Resource = exmpp_jid:resource_as_list(JID),
             case string:chr(OldNode, $%) of
                 0 ->
-                    false;
+                    exmpp_jid:make(undefined, OldNode, Resource);
                 _ ->
                     [Node, Domain] = string:tokens(OldNode, "%"),
-                    Resource = exmpp_jid:resource_as_list(JID),
                     exmpp_jid:make(Node, Domain, Resource)
             end
     end.
 
 encode_jid(JID, AddResource) ->
-    case exmpp_jid:node_as_list(JID) of
+    Domain = ej2j:get_app_env(component, ?COMPONENT),
+    Node = case exmpp_jid:node_as_list(JID) of
         undefined ->
-            false;
+            exmpp_jid:domain_as_list(JID);
         _ ->
-            Node = string:join([exmpp_jid:node_as_list(JID),
-                                exmpp_jid:domain_as_list(JID)], "%"),
-            Domain = ej2j:get_app_env(component, ?COMPONENT),
-
-            case AddResource of
-                true ->
-                    Resource = exmpp_jid:resource_as_list(JID),
-                    exmpp_jid:make(Node, Domain, Resource);
-                false ->
-                    exmpp_jid:make(Node, Domain)
-            end
+            string:join([exmpp_jid:node_as_list(JID),
+                        exmpp_jid:domain_as_list(JID)], "%")
+    end,
+    case AddResource of
+        true ->
+            Resource = exmpp_jid:resource_as_list(JID),
+            exmpp_jid:make(Node, Domain, Resource);
+        false ->
+            exmpp_jid:make(Node, Domain)
     end.
 
 encode_jid(JID) ->

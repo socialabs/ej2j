@@ -219,7 +219,7 @@ drop_client(ConnDb, Bare, Resource) ->
     %% Drop entry
     ets:match_delete(ConnDb, {Bare, Resource, '_'}),
 
-    error_logger:info_msg("-=-=-=-=-=-~n~n Drop: ~p~p~n Info: ~p~n~n-=-=-=-=-=-=-~n", [Bare, Resource, ets:match(ConnDb, {Bare, '$1', '_'})]),
+    %error_logger:info_msg("-=-=-=-=-=-~n~n Drop: ~p~p~n Info: ~p~n~n-=-=-=-=-=-=-~n", [Bare, Resource, ets:match(ConnDb, {Bare, '$1', '_'})]),
 
     %% Return true if there are no local connections left
     %% TODO: Use select_count?
@@ -244,18 +244,14 @@ drop_entry(RouteDb, ConnDb, PidDb, Key) ->
 
 -spec make(list(), any(), any(), list(), list(), list()) -> list().
 make(ConnDb, [Record|Tail], FromJID, ToJID, StanzaID, Acc) ->
-    % TODO: Change what is matched and how
-    error_logger:info_msg("MAKE: ~p -> ~p (~p) = ~p~n", [FromJID, ToJID, StanzaID, Record]),
+    %error_logger:info_msg("MAKE: ~p -> ~p (~p) = ~p~n", [FromJID, ToJID, StanzaID, Record]),
 
     NewAcc = case Record of
                  {_, NewFrom, client, Pid} ->
                     case ej2j_helper:decode_jid(ToJID) of
                         false ->
-                            error_logger:info_msg("NewTO = FAIL~n", []),
                             Acc;
                         NewTo ->
-                            error_logger:info_msg("NewTO ~p~n", [NewTo]),
-
                             % Generate new stanza ID
                             NewID = get_new_id(StanzaID, exmpp_jid:resource(FromJID)),
 
